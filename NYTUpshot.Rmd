@@ -1,0 +1,122 @@
+---
+title: "181113_NYTupshot"
+author: "Sonya Kalara"
+date: "11/13/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+
+## Package installation 
+
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(haven)
+library(fs)
+library(readxl)
+library(lubridate)
+library(kableExtra)
+library(janitor)
+```
+
+```{r include = FALSE, echo = FALSE}
+download.file(url = "https://goo.gl/ZRCBda",
+              destfile = "midtermData.zip",
+              mode = "wb")
+
+unzip("midtermData.zip")
+
+file_names <- dir_ls("./2018-live-poll-results-master/data")
+x <- map_dfr(file_names, read_csv, .id = "source")
+
+mtresults <- read_csv("midterm_results_static.csv")
+latlong <- read_xlsx("latlong.xlsx")
+```
+
+```{r include = FALSE, echo = FALSE}
+## Creates new variables using regular
+## expressions for the wave number,
+## state, and district. Creates a new
+## variable to define the race type and
+## converts state to uppercase. 
+
+transform <- x %>% 
+  mutate(wave = str_extract(source, pattern = "[\\w].csv$")) %>% 
+  mutate(wave = str_sub(wave, 1, 1)) %>% 
+  mutate(state = str_extract(source, pattern = "elections-poll-[:lower:][:lower:]")) %>% 
+  mutate(state = str_sub(state, -2, -1)) %>% 
+  mutate(district = str_extract(source, pattern = "[:digit:][:digit:]-[:digit:].csv$")) %>% 
+  mutate(district = str_sub(district, 1, 2)) %>% 
+  mutate(race = case_when(
+    str_detect(source, pattern = "gov") ~ "Governor",
+    str_detect(source, pattern = "sen") ~ "Senate",
+    TRUE ~ "House")) %>% 
+  mutate(state = toupper(state))
+```
+
+```{r include = FALSE, echo = FALSE}
+
+## Calculates weighted totals for
+## all races. 
+
+full <- transform %>% 
+  group_by(wave, state, district, response) %>% 
+  mutate(total = sum(final_weight)) %>% 
+  mutate(wavey = case_when(
+    wave %in% c("1","2") ~ "Poll 1",
+    wave == "3" ~ "Poll 2")) %>%
+  ungroup() %>% 
+  select(wavey, state, district, total, response, race) %>% 
+  unique() %>% 
+  spread(response, total) 
+
+## Fills NA values with 0s 
+
+full[is.na(full)] <- 0  
+
+## Calculates republican advantage
+## for all races in two distinct 
+## polling cycles. Recreates the district
+## variable to include markers for senate
+## and governor's races. 
+  
+full <- full %>% 
+  mutate(repAdv = (Rep - Dem) / (Rep + Dem + `5` + `6` + `3` + `4` + Und)) %>% 
+  select(state, race, district, wavey, repAdv) %>% 
+  spread(wavey, repAdv) %>% 
+  mutate(repAdv = case_when(
+    !is.na(`Poll 2`) ~ `Poll 2`, 
+    is.na(`Poll 2`) ~ `Poll 1`
+  )) %>% 
+  select(state, race, district, repAdv) %>%
+  mutate(district = case_when(
+    race == "Senate" ~ "sen",
+    race == "Governor" ~ "gov",
+    TRUE ~ district))
+
+## Joins with the data that includes
+## latitude and longitude values for 
+## congressional districts. Creates 
+## RDS object for data concerning 
+## Rep advantage, district, and lat/long. 
+
+
+joined <- full %>% 
+  left_join(mtresults) %>% 
+  mutate(actualAdv = (rep_votes - dem_votes) / (rep_votes + dem_votes + other_votes)) %>% 
+  adorn_pct_formatting(digits = 0, affix_sign = TRUE) %>% 
+  left_join(latlong) %>% 
+  #filter(race == "House") %>% 
+  unite(district, state, district, sep = "-") %>% 
+  select(district, repAdv, actualAdv, latitude, longitude, win_name, win_party) %>% 
+  mutate(win_party = as.factor(win_party)) %>% 
+  mutate(win_party = case_when(
+    win_party == "D" ~ "Democrat", 
+    win_party == "R" ~ "Republican",
+    TRUE ~ "Undecided"
+  )) %>% 
+  write_rds("./App/latlong.rds") 
+
+View(joined)
+```
+
